@@ -135,9 +135,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 	vscode.debug.registerDebugAdapterTrackerFactory('*', {
 		createDebugAdapterTracker(session) {
+			
 			return {
 				onWillStartSession: () => vscode.window.showInformationMessage("Loaded sdl-memory-viewer extension", "Open Preview Pane"),
-				// onWillReceiveMessage: m => console.log(`===> ${JSON.stringify(m, undefined, 2)}`),
+				onWillReceiveMessage: m => console.log(`===> ${JSON.stringify(m, undefined, 2)}`),
 				onDidSendMessage: m => {
 					const { type, success, command, body } = m;
 
@@ -167,20 +168,26 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						const cmd = `-exec memory read -o /tmp/outfile.bin -b --force ${offset} ${offset}+${size}`;
-						vscode.debug.activeDebugConsole.appendLine(cmd);
+
+						vscode.debug.activeDebugSession?.customRequest("evaluate", {
+							expression: cmd,
+							context: "repl"
+						}).then(obj => {
+							console.log("Created outfile.bin");
+						});
 						console.log(cmd);
 					}
 				},
-				// onWillStopSession: () => console.log(`stop: ${session.id}`),
-				// onError: err => console.log(`error: ${err}`),
-				// onExit: (code, signal) => console.log(`exit: ${code}`)
+				onWillStopSession: () => console.log(`stop: ${session.id}`),
+				onError: err => console.log(`error: ${err}`),
+				onExit: (code, signal) => console.log(`exit: ${code}`)
 			};
 		}
 	});
 
 	let disposable = vscode.commands.registerCommand('sdl-memory-viewer.openViewer', () => showPane());
 	context.subscriptions.push(disposable);
-}
 
+}
 // this method is called when your extension is deactivated
 export function deactivate() {}
