@@ -2,7 +2,9 @@ import * as vscode from 'vscode';
 
 export function activate(context: vscode.ExtensionContext) {
 
-	const getWebviewContent = () => {
+	let panel: vscode.WebviewPanel;
+
+	const getWebviewContent = (pixels: (Array<number> | null) = null, width = 0, height = 0) => {
 		return `<!DOCTYPE html>
 		<html lang="en">
 			<head>
@@ -34,13 +36,19 @@ export function activate(context: vscode.ExtensionContext) {
 			</head>
 			<body>
 				<div style="width: 100%; text-align: center">
-					<input type="text" readonly value="memory read -o /tmp/outfile.bin -b --force <offset> <offset>+<size>" />
-					<div>
-						<input id="browse" type="file" value="Browse..." />
-						<select hidden id="select">
-						</select>
-					</div>
-					<canvas id="main" width=150 height=150 style="border: 3px dashed lightgray">canvas not supported</canvas>
+					<p>
+						Hover over an SDL_Surface* or SDL_Texture* while paused with the debugger to preview it here.
+						<!-- Alternatively, run the below command manually and select the file yourself. -->
+					</p>
+					${pixels ? "" :
+						`<input type="text" readonly value="memory read -o /tmp/outfile.bin -b --force <offset> <offset>+<size>" />
+						<div>
+							<input id="browse" type="file" value="Browse..." />
+							<select hidden id="select">
+							</select>
+						</div>`
+					}
+					<canvas id="main" width=${width || 150} height=${height || 150} style="border: 3px dashed lightgray">canvas not supported, a permission error may have occurred</canvas>
 				</div>
 			</body>
 			<script>
@@ -51,8 +59,14 @@ export function activate(context: vscode.ExtensionContext) {
 			let data;
 
 			const resize = () => {
-				select.hidden = false;
-				const [w, h] = guesses[select.selectedIndex];
+				if (select) {
+					select.hidden = false;
+				}
+				// grab the passed width and height, if they're present
+				const [w, h] = ${(width && height) ? 
+					`[${width}, ${height}]` :
+					`guesses[select.selectedIndex]`
+				};
 				canvas.width = w;
 				canvas.height = h;
 				return [w, h];
@@ -78,7 +92,6 @@ export function activate(context: vscode.ExtensionContext) {
 				var ctx = canvas.getContext('2d');
 				let pixels = ctx.createImageData(width, height);
 				let x = 0;
-				console.log(data);
 				for (let x=0; x<data.length; x++) {
 					pixels.data[x] = data[x];
 				}
@@ -92,7 +105,9 @@ export function activate(context: vscode.ExtensionContext) {
 				ctx.putImageData(pixels, 0, 0);
 			}
 
-			select.onchange = updateImage;
+			if (select) {
+				select.onchange = updateImage;
+			}
 
 			const chooseImage = binaryData => {
 				const guesses = guessSizes(binaryData.byteLength);
@@ -108,20 +123,30 @@ export function activate(context: vscode.ExtensionContext) {
 				updateImage();
 			}
 
-			document.getElementById("browse").onchange = e => {
-				var reader = new FileReader();
-				reader.onload = function() {
-					chooseImage(new Uint8Array(reader.result));
-				}
-				reader.readAsArrayBuffer(e.target.files[0]);
-			};
+			const browse = document.getElementById("browse");
+			if (browse) {
+				browse.onchange = e => {
+					var reader = new FileReader();
+					reader.onload = function() {
+						chooseImage(new Uint8Array(reader.result));
+					}
+					reader.readAsArrayBuffer(e.target.files[0]);
+				};
+			}
+
+			${pixels ? `
+				// load from pixel data
+				// TODO: event listener, or socket, or something else instead of stringifying
+				data = new Uint8Array([${pixels}]);
+				updateImage();
+			` : ""}
 
 			</script>
 		</html>`;
 	};
 
 	const showPane = () => {
-		const panel = vscode.window.createWebviewPanel(
+		panel = vscode.window.createWebviewPanel(
 			'sdlPreview',
 			'SDL Preview',
 			vscode.ViewColumn.One,
@@ -139,7 +164,7 @@ export function activate(context: vscode.ExtensionContext) {
 			return {
 				onWillStartSession: () => vscode.window.showInformationMessage("Loaded sdl-memory-viewer extension", "Open Preview Pane"),
 				onWillReceiveMessage: m => console.log(`===> ${JSON.stringify(m, undefined, 2)}`),
-				onDidSendMessage: m => {
+				onDidSendMessage: async (m) => {
 					const { type, success, command, body } = m;
 
 					if (type === "response" && command === "variables" && success === true) {
@@ -166,16 +191,25 @@ export function activate(context: vscode.ExtensionContext) {
 						if (size === 0) {
 							return;
 						}
+						
+						// get a tmp file in our extensions dir
+						// const tmpPath =  `${vscode.workspace.workspaceFolders[0].uri.path}/outfile.bin`;
+						// TODO: don't use "/" on windows?
+						const tmpPath = "/tmp/sdl-preview-data.bin";
 
-						const cmd = `-exec memory read -o /tmp/outfile.bin -b --force ${offset} ${offset}+${size}`;
+						const cmd = `-exec memory read -o ${tmpPath} -b --force ${offset} ${offset}+${size}`;
 
-						vscode.debug.activeDebugSession?.customRequest("evaluate", {
+						const resp = await vscode.debug.activeDebugSession?.customRequest("evaluate", {
 							expression: cmd,
 							context: "repl"
-						}).then(obj => {
-							console.log("Created outfile.bin");
 						});
-						console.log(cmd);
+
+						// wrote the file, now let's read it
+						// TODO: check for resp success here
+						const data = Array.from(await vscode.workspace.fs.readFile(vscode.Uri.file(tmpPath)));
+						
+						// update our pane
+						panel.webview.html = getWebviewContent(data, width, height);
 					}
 				},
 				onWillStopSession: () => console.log(`stop: ${session.id}`),
